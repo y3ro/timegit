@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// TODO: if no matching activity for branch, use project name
 // TODO: proper error handling
 // TODO: factor out common logic for Kimai fetching
 // TODO: help messages
