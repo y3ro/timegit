@@ -19,13 +19,17 @@ import (
 // TODO: factor out common logic for Kimai fetching
 // TODO: help messages
 // TODO: start specific task (cli arg)
-// TODO: option to restart the last one
 
-const kimaiTimesheetsPath = "/timesheets/active"
-const configFileName = "gimai.json"
+const (
+	kimaiTimesheetsPath = "/timesheets/active"
+	kimaiRecentPath = "/timesheets/recent"
+	configFileName = "gimai.json"
+)
 
-var configDir = os.Getenv("HOME") + "/.config/"
-var config Config
+var (
+	configDir = os.Getenv("HOME") + "/.config/"
+	config Config
+)
 
 type Config struct {
 	KimaiUrl      string
@@ -314,6 +318,101 @@ func StartCurrentGitBranchKimaiActivity() error {
 	return nil
 }
 
+func fetchLastKimaiRecord() (*KimaiRecord, error) {	
+	params := "?size=1"
+	url := config.KimaiUrl + kimaiRecentPath + params
+	method := "GET"
+
+	client := &http.Client{}
+	httpReq, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
+	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var recentRecords []KimaiRecord
+	err = json.Unmarshal(respBody, &recentRecords)
+	if err != nil {
+		return nil, err
+	}
+
+	validActiveRecords := filterValidRecords(recentRecords)
+	if len(validActiveRecords) == 0 {
+		return nil, errors.New("No recent records retrieved")
+	}
+
+	return &recentRecords[0], nil
+}
+
+func buildRestartRecordPath(recordID int) string {
+	return fmt.Sprintf("/timesheets/%v/restart", recordID)
+}
+
+func restartKimaiRecord(recordID int) (*KimaiRecord, error) {
+	url := config.KimaiUrl + buildRestartRecordPath(recordID)
+	method := "PATCH"
+
+	client := &http.Client{}
+	httpReq, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
+	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var restartedRecord KimaiRecord
+	err = json.Unmarshal(respBody, &restartedRecord)
+	if err != nil {
+		return nil, err
+	}
+
+	if restartedRecord.Id == 0 {
+		return nil, errors.New("No restarted record")
+	}
+
+	return &restartedRecord, nil
+}
+
+func RestartLastKimaiRecord() error {
+	lastRecord, err := fetchLastKimaiRecord()
+	if err != nil {
+		return err
+	}
+
+	restartedRecord, errRestart := restartKimaiRecord(lastRecord.Id)
+	if errRestart != nil {
+		return errRestart
+	}
+
+	fmt.Println("Restarted record", restartedRecord.Id)
+	return nil
+}
+
 func readConfig() error {
 	err := os.MkdirAll(configDir, os.ModePerm)
 	if err != nil {
@@ -356,6 +455,28 @@ func readConfig() error {
 	return nil
 }
 
+func parseCliArgsAndRun() error {
+	stopOpPtr := flag.Bool("stop", false, "Stop current activity")
+	startOpPtr := flag.Bool("start", false, "Start task for the current branch")
+	restartOpPtr := flag.Bool("restart", false, "Restart previous activity")
+	flag.Parse()
+
+	var opErr error
+	if *stopOpPtr {
+		opErr = StopCurrentKimaiActivities()
+	}
+	if *startOpPtr && *restartOpPtr {
+		return errors.New("You cannot start and restart tasks at the same time")
+	}
+	if *startOpPtr {
+		opErr = StartCurrentGitBranchKimaiActivity()
+	} else if *restartOpPtr {
+		opErr = RestartLastKimaiRecord()
+	}
+
+	return opErr
+}
+
 func main() {
 	err := readConfig()
 	if err != nil {
@@ -363,16 +484,7 @@ func main() {
 		return
 	}
 
-	stopOpPtr := flag.Bool("stop", false, "Stop current activity")
-	flag.Parse()
-
-	var opErr error
-	if *stopOpPtr {
-		opErr = StopCurrentKimaiActivities()
-	} else {
-		opErr = StartCurrentGitBranchKimaiActivity()
-	}
-
+	opErr := parseCliArgsAndRun()
 	if opErr != nil {
 		fmt.Println(opErr)
 		return
