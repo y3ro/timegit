@@ -18,7 +18,6 @@ import (
 // TODO: proper error handling
 // TODO: factor out common logic for Kimai fetching
 // TODO: help messages
-// TODO: create module
 // TODO: start specific task (cli arg)
 // TODO: option to restart the last one
 
