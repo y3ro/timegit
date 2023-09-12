@@ -14,7 +14,6 @@ import (
 	"time"
 )
 
-// TODO: if no matching activity for branch, use project name (or some other default)
 // TODO: proper error handling
 // TODO: factor out common logic for Kimai fetching
 // TODO: help messages
@@ -22,13 +21,13 @@ import (
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
-	kimaiRecentPath = "/timesheets/recent"
-	configFileName = "gimai.json"
+	kimaiRecentPath     = "/timesheets/recent"
+	configFileName      = "gimai.json"
 )
 
 var (
 	configDir = os.Getenv("HOME") + "/.config/"
-	config Config
+	config    Config
 )
 
 type Config struct {
@@ -45,6 +44,14 @@ type KimaiActivity struct {
 
 type KimaiRecord struct {
 	Id int
+}
+
+type NoActivityFound struct {
+	msg string
+}
+
+func (e *NoActivityFound) Error() string {
+	return fmt.Sprintf("[%s] activity not found", e.msg)
 }
 
 func getNow() string {
@@ -91,7 +98,8 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 	}
 
 	if len(kimaiActivities) == 0 {
-		return nil, errors.New("No activities fetched")
+		msg := fmt.Sprintf("term: %s, projectID: %d", term, projectID)
+		return nil, &NoActivityFound{msg: msg}
 	}
 
 	if len(kimaiActivities) > 1 {
@@ -100,7 +108,8 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 
 	kimaiActivity := kimaiActivities[0]
 	if kimaiActivity.Id == 0 {
-		return nil, errors.New("No valid activity fetched")
+		msg := fmt.Sprintf("term: %s, projectID: %d, invalid", term, projectID)
+		return nil, &NoActivityFound{msg: msg}
 	}
 
 	return &kimaiActivity, nil
@@ -287,6 +296,22 @@ func StopCurrentKimaiActivities() error {
 	return nil
 }
 
+func retryStartProjectKimaiActivity(prevErr error, projectName string,
+	projectID int, branchOrProjectName string) (*KimaiActivity, error) {
+
+	var noActivityFoundErrorPtr *NoActivityFound
+	if errors.As(prevErr, noActivityFoundErrorPtr) && branchOrProjectName != projectName {
+		projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
+		if projErr != nil {
+			msg := "%w --after trying: %w"
+			return nil, fmt.Errorf(msg, projErr, prevErr)
+		}
+		return projKimaiActivityPtr, nil
+	} else {
+		return nil, prevErr
+	}
+}
+
 func StartCurrentGitBranchKimaiActivity() error {
 	projectName, err := getProjectName()
 	if err != nil {
@@ -306,6 +331,11 @@ func StartCurrentGitBranchKimaiActivity() error {
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchOrProjectName, projectID)
 	if err != nil {
+		projKimaiActivityPtr, projErr := retryStartProjectKimaiActivity(err, projectName, projectID, branchOrProjectName)
+		kimaiActivityPtr = projKimaiActivityPtr
+		err = projErr
+	}
+	if err != nil {
 		return err
 	}
 
@@ -318,7 +348,7 @@ func StartCurrentGitBranchKimaiActivity() error {
 	return nil
 }
 
-func fetchLastKimaiRecord() (*KimaiRecord, error) {	
+func fetchLastKimaiRecord() (*KimaiRecord, error) {
 	params := "?size=1"
 	url := config.KimaiUrl + kimaiRecentPath + params
 	method := "GET"
