@@ -64,6 +64,7 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 	client := &http.Client{}
 	httpReq, err := http.NewRequest(method, url, body)
 	if err != nil {
+		err = fmt.Errorf("Error creating the request in fetchKimaiResource: %w", err)
 		return nil, err
 	}
 
@@ -72,12 +73,14 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		err = fmt.Errorf("Error performing the request in fetchKimaiResource: %w", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		err = fmt.Errorf("Error reading the response in fetchKimaiResource: %w", err)
 		return nil, err
 	}
 
@@ -94,13 +97,14 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 
 	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
+		err = fmt.Errorf("Error fetching in fetchKimaiActivity: %w", err)
 		return nil, err
 	}
 
 	var kimaiActivities []KimaiActivity
 	err = json.Unmarshal(respBody, &kimaiActivities)
 	if err != nil {
-		fmt.Println(config)
+		err = fmt.Errorf("Error unmarshalling in fetchKimaiActivity: %w", err)
 		return nil, err
 	}
 
@@ -147,6 +151,7 @@ func startKimaiActivity(projectId int, activityId int) (*KimaiActivity, error) {
 	var startedKimaiActivity KimaiActivity
 	err = json.Unmarshal(respBody, &startedKimaiActivity)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in startKimaiActivity: %w", err)
 		return nil, err
 	}
 
@@ -175,12 +180,14 @@ func fetchKimaiActiveRecords() ([]KimaiRecord, error) {
 
 	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
+		err = fmt.Errorf("Error fetching in fetchKimaiActiveRecords: %w", err)
 		return nil, err
 	}
 
 	var activeRecords []KimaiRecord
 	err = json.Unmarshal(respBody, &activeRecords)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in fetchKimaiActiveRecords: %w", err)
 		return nil, err
 	}
 
@@ -209,6 +216,7 @@ func stopKimaiRecord(activityID int) (*KimaiActivity, error) {
 	var stoppedActivity KimaiActivity
 	err = json.Unmarshal(respBody, &stoppedActivity)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in stopKimaiRecord: %w", err)
 		return nil, err
 	}
 
@@ -224,7 +232,8 @@ func getProjectName() (string, error) {
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 	if err != nil {
-		return "", errors.New(outputStr)
+		err = fmt.Errorf("Error getting project name: %s [%w]", outputStr, err)
+		return "", err 
 	}
 	parts := strings.Split(strings.TrimSpace(outputStr), "/")
 	projectName := parts[len(parts)-1]
@@ -235,7 +244,9 @@ func getProjectName() (string, error) {
 func getCurrentGitBranch() (string, error) {
 	cmd := exec.Command("git", "branch", "--show-current")
 	output, err := cmd.Output()
+	outputStr := string(output)
 	if err != nil {
+		err = fmt.Errorf("Error getting current git branch: %s [%w]", outputStr, err)
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
@@ -244,6 +255,7 @@ func getCurrentGitBranch() (string, error) {
 func StopCurrentKimaiActivities() error {
 	activeRecords, err := fetchKimaiActiveRecords()
 	if err != nil {
+		err = fmt.Errorf("Error fetching active records in stopCurrentKimaiActivities: %w", err)
 		return err
 	}
 
@@ -252,6 +264,7 @@ func StopCurrentKimaiActivities() error {
 		activeRecord := activeRecords[i]
 		kimaiActivity, err = stopKimaiRecord(activeRecord.Id)
 		if err != nil {
+			err = fmt.Errorf("Error stopping active record (%d) in stopCurrentKimaiActivities: %w", activeRecord.Id, err)
 			return err
 		}
 		fmt.Println("Stopped active record", kimaiActivity.Id)
@@ -319,12 +332,14 @@ func fetchLastKimaiRecord() (*KimaiRecord, error) {
 
 	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
+		err = fmt.Errorf("Error fetching in fetchLastKimaiRecord: %w", err)
 		return nil, err
 	}
 
 	var recentRecords []KimaiRecord
 	err = json.Unmarshal(respBody, &recentRecords)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in fetchLastKimaiRecord: %w", err)
 		return nil, err
 	}
 
@@ -353,6 +368,7 @@ func restartKimaiRecord(recordID int) (*KimaiRecord, error) {
 	var restartedRecord KimaiRecord
 	err = json.Unmarshal(respBody, &restartedRecord)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in restartKimaiRecord: %w", err)
 		return nil, err
 	}
 
@@ -381,23 +397,27 @@ func RestartLastKimaiRecord() error {
 func readConfig() error {
 	err := os.MkdirAll(configDir, os.ModePerm)
 	if err != nil {
+		err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
 		return err
 	}
 
 	configFilePath := configDir + configFileName
 	configFile, err := os.Open(configFilePath)
 	if err != nil {
+		err = fmt.Errorf("Error opening config file in readConfig: %w", err)
 		return err
 	}
 	defer configFile.Close()
 
 	configBytes, err := ioutil.ReadAll(configFile)
 	if err != nil {
+		err = fmt.Errorf("Error reading config file in readConfig: %w", err)
 		return err
 	}
 
 	err = json.Unmarshal(configBytes, &config)
 	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in readConfig: %w", err)
 		return err
 	}
 
