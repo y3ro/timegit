@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -61,16 +62,9 @@ func buildActivitiesPath(term string, projectID int) string {
 	return fmt.Sprintf("/activities?term=%s&project=%d", term, projectID)
 }
 
-func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
-	if term == "" || projectID == 0 {
-		return nil, errors.New("Empty term or invalid project id")
-	}
-
-	url := config.KimaiUrl + buildActivitiesPath(term, projectID)
-	method := "GET"
-
+func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, error) {
 	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, nil)
+	httpReq, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +79,22 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 	defer resp.Body.Close()
 
 	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return respBody, nil
+}
+
+func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
+	if term == "" || projectID == 0 {
+		return nil, errors.New("Empty term or invalid project id")
+	}
+
+	url := config.KimaiUrl + buildActivitiesPath(term, projectID)
+	method := "GET"
+
+	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -179,22 +189,7 @@ func fetchKimaiActiveRecords() ([]KimaiRecord, error) {
 	url := config.KimaiUrl + kimaiTimesheetsPath
 	method := "GET"
 
-	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
-	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -352,22 +347,7 @@ func fetchLastKimaiRecord() (*KimaiRecord, error) {
 	url := config.KimaiUrl + kimaiRecentPath + params
 	method := "GET"
 
-	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
-	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
 		return nil, err
 	}
