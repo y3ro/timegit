@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// TODO: factor out common logic for Kimai fetching
-// TODO: split into multiple files
 // TODO: add tests
 
 const (
@@ -135,28 +133,14 @@ func startKimaiActivity(projectId int, activityId int) (*KimaiActivity, error) {
 	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
+		err = fmt.Errorf("Error marshalling in startKimaiActivity: %w", err)
 		return nil, err
 	}
 	bodyReader := bytes.NewReader(reqBodyBytes)
 
-	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, bodyReader)
+	respBody, err := fetchKimaiResource(url, method, bodyReader)
 	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
-	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
+		err = fmt.Errorf("Error fetching in startKimaiActivity: %w", err)
 		return nil, err
 	}
 
@@ -216,23 +200,9 @@ func stopKimaiRecord(activityID int) (*KimaiActivity, error) {
 	url := config.KimaiUrl + buildStopActivityPath(activityID)
 	method := "PATCH"
 
-	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, nil)
+	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
-	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
+		err = fmt.Errorf("Error fetching in stopKimaiRecord: %w", err)
 		return nil, err
 	}
 
@@ -374,23 +344,9 @@ func restartKimaiRecord(recordID int) (*KimaiRecord, error) {
 	url := config.KimaiUrl + buildRestartRecordPath(recordID)
 	method := "PATCH"
 
-	client := &http.Client{}
-	httpReq, err := http.NewRequest(method, url, nil)
+	respBody, err := fetchKimaiResource(url, method, nil)
 	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
-	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
+		err = fmt.Errorf("Error fetching in restartKimaiRecord: %w", err)
 		return nil, err
 	}
 
