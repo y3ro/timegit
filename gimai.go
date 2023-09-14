@@ -14,10 +14,9 @@ import (
 	"time"
 )
 
-// TODO: proper error handling
 // TODO: factor out common logic for Kimai fetching
-// TODO: help messages
-// TODO: start specific task (cli arg)
+// TODO: split into multiple files
+// TODO: add tests
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
@@ -46,11 +45,11 @@ type KimaiRecord struct {
 	Id int
 }
 
-type NoActivityFound struct {
+type NoActivityFoundError struct {
 	msg string
 }
 
-func (e *NoActivityFound) Error() string {
+func (e *NoActivityFoundError) Error() string {
 	return fmt.Sprintf("[%s] activity not found", e.msg)
 }
 
@@ -99,7 +98,7 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 
 	if len(kimaiActivities) == 0 {
 		msg := fmt.Sprintf("term: %s, projectID: %d", term, projectID)
-		return nil, &NoActivityFound{msg: msg}
+		return nil, &NoActivityFoundError{msg: msg}
 	}
 
 	if len(kimaiActivities) > 1 {
@@ -109,7 +108,7 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 	kimaiActivity := kimaiActivities[0]
 	if kimaiActivity.Id == 0 {
 		msg := fmt.Sprintf("term: %s, projectID: %d, invalid", term, projectID)
-		return nil, &NoActivityFound{msg: msg}
+		return nil, &NoActivityFoundError{msg: msg}
 	}
 
 	return &kimaiActivity, nil
@@ -299,7 +298,7 @@ func StopCurrentKimaiActivities() error {
 func retryStartProjectKimaiActivity(prevErr error, projectName string,
 	projectID int, branchOrProjectName string) (*KimaiActivity, error) {
 
-	var noActivityFoundErrorPtr *NoActivityFound
+	var noActivityFoundErrorPtr *NoActivityFoundError
 	if errors.As(prevErr, noActivityFoundErrorPtr) && branchOrProjectName != projectName {
 		projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
 		if projErr != nil {
