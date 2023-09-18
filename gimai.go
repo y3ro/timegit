@@ -89,7 +89,7 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 
 func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 	if term == "" || projectID == 0 {
-		return nil, errors.New("Empty term or invalid project id")
+		return nil, errors.New("empty term or invalid project id")
 	}
 
 	url := config.KimaiUrl + buildActivitiesPath(term, projectID)
@@ -114,7 +114,7 @@ func fetchKimaiActivity(term string, projectID int) (*KimaiActivity, error) {
 	}
 
 	if len(kimaiActivities) > 1 {
-		return nil, errors.New("Multiple activities fetched")
+		return nil, errors.New("multiple activities fetched")
 	}
 
 	kimaiActivity := kimaiActivities[0]
@@ -156,7 +156,7 @@ func startKimaiActivity(projectId int, activityId int) (*KimaiActivity, error) {
 	}
 
 	if startedKimaiActivity.Id == 0 {
-		return nil, errors.New("No activity started")
+		return nil, errors.New("no activity started")
 	}
 
 	return &startedKimaiActivity, nil
@@ -193,7 +193,7 @@ func fetchKimaiActiveRecords() ([]KimaiRecord, error) {
 
 	validActiveRecords := filterValidRecords(activeRecords)
 	if len(validActiveRecords) == 0 {
-		return nil, errors.New("No active records retrieved")
+		return nil, errors.New("no active records retrieved")
 	}
 
 	return activeRecords, nil
@@ -221,7 +221,7 @@ func stopKimaiRecord(activityID int) (*KimaiActivity, error) {
 	}
 
 	if stoppedActivity.Id == 0 {
-		return nil, errors.New("No stopped activity")
+		return nil, errors.New("no stopped activity")
 	}
 
 	return &stoppedActivity, nil
@@ -304,7 +304,7 @@ func StartCurrentGitBranchKimaiActivity() error {
 	}
 	projectID, ok := config.ProjectMap[projectName]
 	if !ok {
-		return errors.New("No activity associated with the current branch/project")
+		return errors.New("no activity associated with the current branch/project")
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchOrProjectName, projectID)
 	if err != nil {
@@ -345,7 +345,7 @@ func fetchLastKimaiRecord() (*KimaiRecord, error) {
 
 	validActiveRecords := filterValidRecords(recentRecords)
 	if len(validActiveRecords) == 0 {
-		return nil, errors.New("No recent records retrieved")
+		return nil, errors.New("no recent records retrieved")
 	}
 
 	return &recentRecords[0], nil
@@ -373,7 +373,7 @@ func restartKimaiRecord(recordID int) (*KimaiRecord, error) {
 	}
 
 	if restartedRecord.Id == 0 {
-		return nil, errors.New("No restarted record")
+		return nil, errors.New("no restarted record")
 	}
 
 	return &restartedRecord, nil
@@ -422,19 +422,19 @@ func readConfig() error {
 	}
 
 	if config.KimaiUrl == "" {
-		return errors.New("No Kimai URL specified in the config file")
+		return errors.New("no Kimai URL specified in the config file")
 	}
 	if config.KimaiUsername == "" {
-		return errors.New("No Kimai username specified in the config file")
+		return errors.New("no Kimai username specified in the config file")
 	}
 	if config.KimaiPassword == "" {
-		return errors.New("No Kimai password specified in the config file")
+		return errors.New("no Kimai password specified in the config file")
 	}
 	if config.HourlyRate == 0 {
-		return errors.New("No hourly rate specified in the config file")
+		return errors.New("no hourly rate specified in the config file")
 	}
 	if len(config.ProjectMap) == 0 {
-		return errors.New("No project id map specified in the config file")
+		return errors.New("no project id map specified in the config file")
 	}
 
 	return nil
@@ -451,7 +451,7 @@ func parseCliArgsAndRun() error {
 		opErr = StopCurrentKimaiActivities()
 	}
 	if *startOpPtr && *restartOpPtr {
-		return errors.New("You cannot start and restart tasks at the same time")
+		return errors.New("you cannot start and restart tasks at the same time")
 	}
 	if *startOpPtr {
 		opErr = StartCurrentGitBranchKimaiActivity()
