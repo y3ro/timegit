@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +15,7 @@ import (
 )
 
 // TODO: add tests
+// TODO: use env vars for this v to allow vars for testing
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
@@ -78,7 +78,7 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		err = fmt.Errorf("Error reading the response in fetchKimaiResource: %w", err)
 		return nil, err
@@ -409,7 +409,7 @@ func readConfig() error {
 	}
 	defer configFile.Close()
 
-	configBytes, err := ioutil.ReadAll(configFile)
+	configBytes, err := io.ReadAll(configFile)
 	if err != nil {
 		err = fmt.Errorf("Error reading config file in readConfig: %w", err)
 		return err
