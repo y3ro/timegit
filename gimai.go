@@ -273,7 +273,7 @@ func StopCurrentKimaiActivities() error {
 	return nil
 }
 
-func retryStartProjectKimaiActivity(prevErr error, projectName string,
+func fetchProjectKimaiActivity(prevErr error, projectName string,
 	projectID int, branchOrProjectName string) (*KimaiActivity, error) {
 
 	var noActivityFoundErrorPtr *NoActivityFoundError
@@ -308,7 +308,7 @@ func StartCurrentGitBranchKimaiActivity() error {
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchOrProjectName, projectID)
 	if err != nil {
-		projKimaiActivityPtr, projErr := retryStartProjectKimaiActivity(err, projectName, projectID, branchOrProjectName)
+		projKimaiActivityPtr, projErr := fetchProjectKimaiActivity(err, projectName, projectID, branchOrProjectName)
 		kimaiActivityPtr = projKimaiActivityPtr
 		err = projErr
 	}
