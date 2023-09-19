@@ -273,6 +273,42 @@ func StopCurrentKimaiActivities() error {
 	return nil
 }
 
+func createDefaultProjectKimaiActivity(projectName string, projectID int) (*KimaiActivity, error) {
+	url := config.KimaiUrl + "/api/activities"
+	method := "POST"
+	reqBody := map[string]interface{}{
+		"name":       projectName,
+		"project":    projectID,
+		"visible":    true,
+		"billable":   true,
+	}
+	reqBodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		err = fmt.Errorf("Error marshalling in createDefaultProjectKimaiActivity: %w", err)
+		return nil, err
+	}
+	bodyReader := bytes.NewReader(reqBodyBytes)
+
+	respBody, err := fetchKimaiResource(url, method, bodyReader)
+	if err != nil {
+		err = fmt.Errorf("Error fetching in createDefaultProjectKimaiActivity: %w", err)
+		return nil, err
+	}
+
+	var createdKimaiActivity KimaiActivity
+	err = json.Unmarshal(respBody, &createdKimaiActivity)
+	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in createDefaultProjectKimaiActivity: %w", err)
+		return nil, err
+	}
+	
+	if createdKimaiActivity.Id == 0 {
+		return nil, errors.New("error creating the default project activity")
+	}
+
+	return &createdKimaiActivity, nil
+}
+
 func fetchProjectKimaiActivity(prevErr error, projectName string,
 	projectID int, branchOrProjectName string) (*KimaiActivity, error) {
 
@@ -280,6 +316,11 @@ func fetchProjectKimaiActivity(prevErr error, projectName string,
 	if errors.As(prevErr, noActivityFoundErrorPtr) && branchOrProjectName != projectName {
 		projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
 		if projErr != nil {
+			createdKimaiActivityPtr, createErr := createDefaultProjectKimaiActivity(projectName, projectID)
+			projKimaiActivityPtr = createdKimaiActivityPtr
+			projErr = createErr
+		}
+		if projErr != nil { 
 			msg := "%w --after trying: %w"
 			return nil, fmt.Errorf(msg, projErr, prevErr)
 		}
