@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -24,7 +25,6 @@ const (
 )
 
 var (
-	configDir = os.Getenv("HOME") + "/.config/"
 	config    Config
 )
 
@@ -50,6 +50,17 @@ type NoActivityFoundError struct {
 
 func (e *NoActivityFoundError) Error() string {
 	return fmt.Sprintf("[%s] activity not found", e.msg)
+}
+
+func getHomePath() string {
+	var homePath string
+	if runtime.GOOS == "windows" {
+		homePath = "HOMEPATH"
+	} else {
+		homePath = "HOME"
+	}
+
+	return os.Getenv(homePath) + "/.config/"
 }
 
 func getNow() string {
@@ -436,6 +447,7 @@ func RestartLastKimaiRecord() error {
 }
 
 func readConfig() error {
+	configDir := getHomePath()
 	err := os.MkdirAll(configDir, os.ModePerm)
 	if err != nil {
 		err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
