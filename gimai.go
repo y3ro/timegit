@@ -10,13 +10,16 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
 
 // TODO: add tests
-// TODO: use env vars for this v to allow vars for testing
+// TODO: if it does not exist, create config file template
+// TODO: allow to search project by name
+// TODO: option to list Kimai projects with their ids
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
@@ -60,7 +63,7 @@ func getHomePath() string {
 		homePath = "HOME"
 	}
 
-	return os.Getenv(homePath) + "/.config/"
+	return filepath.Join(os.Getenv(homePath), ".config")
 }
 
 func getNow() string {
@@ -454,7 +457,7 @@ func readConfig() error {
 		return err
 	}
 
-	configFilePath := configDir + configFileName
+	configFilePath := filepath.Join(configDir, configFileName)
 	configFile, err := os.Open(configFilePath)
 	if err != nil {
 		err = fmt.Errorf("Error opening config file in readConfig: %w", err)
