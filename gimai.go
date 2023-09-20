@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,11 +20,11 @@ import (
 // TODO: add tests
 // TODO: if it does not exist, create config file template
 // TODO: allow to search project by name
-// TODO: option to list Kimai projects with their ids
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
 	kimaiRecentPath     = "/timesheets/recent"
+	kimaiProjectsPath   = "/project"
 	configFileName      = "gimai.json"
 )
 
@@ -37,6 +38,11 @@ type Config struct {
 	KimaiPassword string
 	HourlyRate    int
 	ProjectMap    map[string]int
+}
+
+type KimaiProject struct {
+	Id int
+	Name string
 }
 
 type KimaiActivity struct {
@@ -449,6 +455,42 @@ func RestartLastKimaiRecord() error {
 	return nil
 }
 
+func fetchKimaiProjects() ([]KimaiProject, error) {
+	url := config.KimaiUrl + "/projects"
+	method := "GET"
+
+	respBody, err := fetchKimaiResource(url, method, nil)
+	if err != nil {
+		err = fmt.Errorf("Error fetching in fetchKimaiProjects: %w", err)
+		return nil, err
+	}
+
+	var kimaiProjects []KimaiProject
+	err = json.Unmarshal(respBody, &kimaiProjects)
+	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in fetchKimaiProjects: %w", err)
+		return nil, err
+	}
+
+	return kimaiProjects, nil
+}
+
+func ListKimaiProjects() error {
+	kimaiProjects, err := fetchKimaiProjects()
+	if err != nil {
+		return err
+	}
+
+	var entries []string
+	for i := 0; i < len(kimaiProjects); i++ {
+		proj := kimaiProjects[i]
+		entries = append(entries, "\"" + proj.Name + "\"" + ": " + strconv.Itoa(proj.Id))
+	}
+	fmt.Println(strings.Join(entries, ",\n"))
+	
+	return nil
+}
+
 func readConfig() error {
 	configDir := getHomePath()
 	err := os.MkdirAll(configDir, os.ModePerm)
@@ -500,9 +542,13 @@ func parseCliArgsAndRun() error {
 	stopOpPtr := flag.Bool("stop", false, "Stop current activity")
 	startOpPtr := flag.Bool("start", false, "Start task for the current branch")
 	restartOpPtr := flag.Bool("restart", false, "Restart previous activity")
+	listProjsOpPtr := flag.Bool("list-projs", false, "List available projects info")
 	flag.Parse()
 
 	var opErr error
+	if *listProjsOpPtr {
+		return ListKimaiProjects()
+	}
 	if *stopOpPtr {
 		opErr = StopCurrentKimaiActivities()
 	}
