@@ -91,6 +91,10 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 	httpReq.Header.Set("X-AUTH-USER", config.KimaiUsername)
 	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
 
+	if body != nil {
+		httpReq.Header.Set("Content-Type", "application/json") 
+	}
+
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		err = fmt.Errorf("Error performing the request in fetchKimaiResource: %w", err)
@@ -294,7 +298,7 @@ func StopCurrentKimaiActivities() error {
 }
 
 func createDefaultProjectKimaiActivity(projectName string, projectID int) (*KimaiActivity, error) {
-	url := config.KimaiUrl + "/api/activities"
+	url := config.KimaiUrl + "/activities"
 	method := "POST"
 	reqBody := map[string]interface{}{
 		"name":       projectName,
@@ -323,31 +327,24 @@ func createDefaultProjectKimaiActivity(projectName string, projectID int) (*Kima
 	}
 	
 	if createdKimaiActivity.Id == 0 {
-		return nil, errors.New("error creating the default project activity")
+		return nil, errors.New("error creating the default project activity for " + projectName)
 	}
 
 	return &createdKimaiActivity, nil
 }
 
-func fetchProjectKimaiActivity(prevErr error, projectName string,
-	projectID int, branchOrProjectName string) (*KimaiActivity, error) {
-
-	var noActivityFoundErrorPtr *NoActivityFoundError
-	if errors.As(prevErr, noActivityFoundErrorPtr) && branchOrProjectName != projectName {
-		projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
-		if projErr != nil {
-			createdKimaiActivityPtr, createErr := createDefaultProjectKimaiActivity(projectName, projectID)
-			projKimaiActivityPtr = createdKimaiActivityPtr
-			projErr = createErr
-		}
-		if projErr != nil { 
-			msg := "%w --after trying: %w"
-			return nil, fmt.Errorf(msg, projErr, prevErr)
-		}
-		return projKimaiActivityPtr, nil
-	} else {
-		return nil, prevErr
+func fetchProjectKimaiActivity(projectName string, projectID int) (*KimaiActivity, error) {
+	projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
+	if projErr != nil {
+		createdKimaiActivityPtr, createErr := createDefaultProjectKimaiActivity(projectName, projectID)
+		projKimaiActivityPtr = createdKimaiActivityPtr
+		projErr = createErr
 	}
+	if projErr != nil {
+		return nil, projErr
+	}
+	
+	return projKimaiActivityPtr, nil
 }
 
 func StartCurrentGitBranchKimaiActivity() error {
@@ -369,7 +366,7 @@ func StartCurrentGitBranchKimaiActivity() error {
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchOrProjectName, projectID)
 	if err != nil {
-		projKimaiActivityPtr, projErr := fetchProjectKimaiActivity(err, projectName, projectID, branchOrProjectName)
+		projKimaiActivityPtr, projErr := fetchProjectKimaiActivity(projectName, projectID)
 		kimaiActivityPtr = projKimaiActivityPtr
 		err = projErr
 	}
