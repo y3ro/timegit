@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+// TODO: no args -> help
+
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
 	kimaiRecentPath     = "/timesheets/recent"
@@ -577,13 +579,13 @@ func parseCliArgsAndRun() error {
 func main() {
 	err := readConfig()
 	if err != nil {
-		fmt.Println(err)
-		return
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
 	}
 
 	opErr := parseCliArgsAndRun()
 	if opErr != nil {
-		fmt.Println(opErr)
-		return
+		fmt.Fprintf(os.Stderr, "%s\n", opErr)
+		os.Exit(1)
 	}
 }
