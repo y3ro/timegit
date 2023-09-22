@@ -18,8 +18,7 @@ import (
 )
 
 // TODO: add tests
-// TODO: if it does not exist, create config file template
-// TODO: allow to search project by name
+// TODO: rename project to gitime or timegit
 
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
@@ -488,6 +487,22 @@ func ListKimaiProjects() error {
 	return nil
 }
 
+func configFileHelp() string {
+	helpConfig := Config{
+		KimaiUrl: "https://timetracking.domain.com",
+		KimaiUsername: "username",
+		KimaiPassword: "password",
+		HourlyRate: 100,
+		ProjectMap: map[string]int{
+			"project1": 0,
+			"project2": 1,
+		},
+	}
+
+	helpBytes, _ := json.MarshalIndent(helpConfig, "", "    ")
+	return string(helpBytes)
+}
+
 func readConfig() error {
 	configDir := getHomePath()
 	err := os.MkdirAll(configDir, os.ModePerm)
@@ -499,7 +514,8 @@ func readConfig() error {
 	configFilePath := filepath.Join(configDir, configFileName)
 	configFile, err := os.Open(configFilePath)
 	if err != nil {
-		err = fmt.Errorf("Error opening config file in readConfig: %w", err)
+		helpMsg := configFileHelp()
+		err = fmt.Errorf("%w\n\nExample configuration:\n\n%s", err, helpMsg)
 		return err
 	}
 	defer configFile.Close()
