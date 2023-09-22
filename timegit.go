@@ -17,8 +17,6 @@ import (
 	"time"
 )
 
-// TODO: no args -> help
-
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
 	kimaiRecentPath     = "/timesheets/recent"
@@ -556,6 +554,10 @@ func parseCliArgsAndRun() error {
 	restartOpPtr := flag.Bool("restart", false, "Restart previous activity")
 	listProjsOpPtr := flag.Bool("list-projs", false, "List available projects info")
 	flag.Parse()
+
+	if len(os.Args) == 1 {
+		flag.Usage()
+	}
 
 	var opErr error
 	if *listProjsOpPtr {
