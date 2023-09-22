@@ -17,14 +17,11 @@ import (
 	"time"
 )
 
-// TODO: add tests
-// TODO: rename project to gitime or timegit
-
 const (
 	kimaiTimesheetsPath = "/timesheets/active"
 	kimaiRecentPath     = "/timesheets/recent"
 	kimaiProjectsPath   = "/project"
-	configFileName      = "gimai.json"
+	configFileName      = "timegit.json"
 )
 
 var (
