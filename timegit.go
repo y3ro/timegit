@@ -349,18 +349,15 @@ func StartCurrentGitBranchKimaiActivity() error {
 		return err
 	}
 
-	branchOrProjectName, err := getCurrentGitBranch()
+	branchName, err := getCurrentGitBranch()
 	if err != nil {
 		return err
-	}
-	if branchOrProjectName == "master" || branchOrProjectName == "develop" {
-		branchOrProjectName = projectName
 	}
 	projectID, ok := config.ProjectMap[projectName]
 	if !ok {
 		return errors.New("no activity associated with the current branch/project")
 	}
-	kimaiActivityPtr, err := fetchKimaiActivity(branchOrProjectName, projectID)
+	kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
 	if err != nil {
 		projKimaiActivityPtr, projErr := fetchProjectKimaiActivity(projectName, projectID)
 		kimaiActivityPtr = projKimaiActivityPtr
