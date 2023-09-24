@@ -12,6 +12,13 @@ Assuming you have Go 1.21 installed:
 
 You need to have `$HOME/go/bin` in your `PATH`.
 
+## Naming conventions
+
+The local folder containing the Git repository should have the same name as the corresponding project in Kimai.
+
+The name of the current Git branch can also correspond to that of an activity for the Kimai project to start it.
+If it doesn't, a default activity for the project is selected (see `-start` option below).
+
 ## Usage
 
 First you will need to create the configuration file `$HOME/.config/timegit.json`.
