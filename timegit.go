@@ -34,6 +34,7 @@ type Config struct {
 	KimaiPassword string
 	HourlyRate    int
 	ProjectMap    map[string]int
+  configPath    string
 }
 
 type KimaiProject struct {
@@ -498,15 +499,17 @@ func configFileHelp() string {
 }
 
 func readConfig() error {
-	configDir := getHomePath()
-	err := os.MkdirAll(configDir, os.ModePerm)
-	if err != nil {
-		err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
-		return err
-	}
+  if len(config.configPath) == 0 {
+	  configDir := getHomePath()
+    err := os.MkdirAll(configDir, os.ModePerm)
+    if err != nil {
+      err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
+      return err
+    }
+	  config.configPath = filepath.Join(configDir, configFileName)
+  }
 
-	configFilePath := filepath.Join(configDir, configFileName)
-	configFile, err := os.Open(configFilePath)
+	configFile, err := os.Open(config.configPath)
 	if err != nil {
 		helpMsg := configFileHelp()
 		err = fmt.Errorf("%w\n\nExample configuration:\n\n%s", err, helpMsg)
@@ -550,10 +553,19 @@ func parseCliArgsAndRun() error {
 	startOpPtr := flag.Bool("start", false, "Start task for the current branch")
 	restartOpPtr := flag.Bool("restart", false, "Restart previous activity")
 	listProjsOpPtr := flag.Bool("list-projs", false, "List available projects info")
+  configPathPtr := flag.String("config", "", "Path to the configuration file")
+  didSomething := false
 	flag.Parse()
 
 	if len(os.Args) == 1 {
 		flag.Usage()
+	}
+
+  config.configPath = *configPathPtr
+	err := readConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
 	}
 
 	var opErr error
@@ -562,26 +574,27 @@ func parseCliArgsAndRun() error {
 	}
 	if *stopOpPtr {
 		opErr = StopCurrentKimaiActivities()
+    didSomething = true
 	}
 	if *startOpPtr && *restartOpPtr {
 		return errors.New("you cannot start and restart tasks at the same time")
 	}
 	if *startOpPtr {
 		opErr = StartCurrentGitBranchKimaiActivity()
+    didSomething = true
 	} else if *restartOpPtr {
 		opErr = RestartLastKimaiRecord()
+    didSomething = true
 	}
+
+  if !didSomething {
+    flag.Usage()
+  }
 
 	return opErr
 }
 
 func main() {
-	err := readConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
-		os.Exit(1)
-	}
-
 	opErr := parseCliArgsAndRun()
 	if opErr != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", opErr)
