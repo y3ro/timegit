@@ -21,7 +21,7 @@ If it doesn't, a default activity for the project is selected (see `-start` opti
 
 ## Usage
 
-First you will need to create the configuration file `$HOME/.config/timegit.json`.
+First you will need to create the configuration file `$HOME/.config/timegit.json` (or specify your own filepath with the `-config` option).
 Example contents:
 
 ```
@@ -53,6 +53,7 @@ If this default activity, which has the same name of the project, does not exist
 * `-stop`: Stops all current active records in your Kimai instance.
 * `-restart`: Starts a new record for the last activity stopped.
 * `-list-projs`: Prints the map of the registered projects in your Kimai instance, which you can copy to use in your configuration file. 
+* `-config <filepath>`: Specifies the path to the configuration file. If not specified, the default configuration file is in `$HOME/.config/timegit.json`. 
 
 ### Integration with Git
 
