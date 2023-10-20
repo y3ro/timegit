@@ -360,12 +360,10 @@ func StartCurrentGitBranchKimaiActivity() error {
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
 	if err != nil {
-		projKimaiActivityPtr, projErr := fetchProjectKimaiActivity(projectName, projectID)
-		kimaiActivityPtr = projKimaiActivityPtr
-		err = projErr
-	}
-	if err != nil {
-		return err
+		kimaiActivityPtr, err = fetchProjectKimaiActivity(projectName, projectID)
+    if err != nil {
+      return err
+    }
 	}
 
 	startedActivity, errStart := startKimaiActivity(projectID, kimaiActivityPtr.Id)
