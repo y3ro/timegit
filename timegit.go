@@ -557,6 +557,7 @@ func parseCliArgsAndRun() error {
 
 	if len(os.Args) == 1 {
 		flag.Usage()
+		didSomething = true
 	}
 
 	config.configPath = *configPathPtr
