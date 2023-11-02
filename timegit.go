@@ -18,14 +18,14 @@ import (
 )
 
 const (
-	kimaiTimesheetsPath = "/timesheets/active"
+	kimaiTimesheetsPath = "/timesheets/active" // TODO: api/...
 	kimaiRecentPath     = "/timesheets/recent"
 	kimaiProjectsPath   = "/project"
 	configFileName      = "timegit.json"
 )
 
 var (
-	config    Config
+	config Config
 )
 
 type Config struct {
@@ -34,11 +34,11 @@ type Config struct {
 	KimaiPassword string
 	HourlyRate    int
 	ProjectMap    map[string]int
-  configPath    string
+	configPath    string
 }
 
 type KimaiProject struct {
-	Id int
+	Id   int
 	Name string
 }
 
@@ -58,7 +58,7 @@ func (e *NoActivityFoundError) Error() string {
 	return fmt.Sprintf("[%s] activity not found", e.msg)
 }
 
-func getHomePath() string {
+func getHomePath() string { // TODO: getConfigDir
 	var homePath string
 	if runtime.GOOS == "windows" {
 		homePath = "HOMEPATH"
@@ -89,7 +89,7 @@ func fetchKimaiResource(url string, method string, body io.Reader) ([]byte, erro
 	httpReq.Header.Set("X-AUTH-TOKEN", config.KimaiPassword)
 
 	if body != nil {
-		httpReq.Header.Set("Content-Type", "application/json") 
+		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := client.Do(httpReq)
@@ -217,7 +217,7 @@ func fetchKimaiActiveRecords() ([]KimaiRecord, error) {
 		return nil, errors.New("no active records retrieved")
 	}
 
-	return activeRecords, nil
+	return validActiveRecords, nil
 }
 
 func buildStopActivityPath(activityID int) string {
@@ -254,7 +254,7 @@ func getProjectName() (string, error) {
 	outputStr := string(output)
 	if err != nil {
 		err = fmt.Errorf("Error getting project name: %s [%w]", outputStr, err)
-		return "", err 
+		return "", err
 	}
 	parts := strings.Split(strings.TrimSpace(outputStr), "/")
 	projectName := parts[len(parts)-1]
@@ -270,7 +270,7 @@ func getCurrentGitBranch() (string, error) {
 		err = fmt.Errorf("Error getting current git branch: %s [%w]", outputStr, err)
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(outputStr), nil
 }
 
 func StopCurrentKimaiActivities() error {
@@ -298,10 +298,10 @@ func createDefaultProjectKimaiActivity(projectName string, projectID int) (*Kima
 	url := config.KimaiUrl + "/activities"
 	method := "POST"
 	reqBody := map[string]interface{}{
-		"name":       projectName,
-		"project":    projectID,
-		"visible":    true,
-		"billable":   true,
+		"name":     projectName,
+		"project":  projectID,
+		"visible":  true,
+		"billable": true,
 	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -322,7 +322,7 @@ func createDefaultProjectKimaiActivity(projectName string, projectID int) (*Kima
 		err = fmt.Errorf("Error unmarshalling in createDefaultProjectKimaiActivity: %w", err)
 		return nil, err
 	}
-	
+
 	if createdKimaiActivity.Id == 0 {
 		return nil, errors.New("error creating the default project activity for " + projectName)
 	}
@@ -340,7 +340,7 @@ func fetchProjectKimaiActivity(projectName string, projectID int) (*KimaiActivit
 	if projErr != nil {
 		return nil, projErr
 	}
-	
+
 	return projKimaiActivityPtr, nil
 }
 
@@ -361,9 +361,9 @@ func StartCurrentGitBranchKimaiActivity() error {
 	kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
 	if err != nil {
 		kimaiActivityPtr, err = fetchProjectKimaiActivity(projectName, projectID)
-    if err != nil {
-      return err
-    }
+		if err != nil {
+			return err
+		}
 	}
 
 	startedActivity, errStart := startKimaiActivity(projectID, kimaiActivityPtr.Id)
@@ -473,19 +473,19 @@ func ListKimaiProjects() error {
 	var entries []string
 	for i := 0; i < len(kimaiProjects); i++ {
 		proj := kimaiProjects[i]
-		entries = append(entries, "\"" + proj.Name + "\"" + ": " + strconv.Itoa(proj.Id))
+		entries = append(entries, "\""+proj.Name+"\""+": "+strconv.Itoa(proj.Id))
 	}
 	fmt.Println(strings.Join(entries, ",\n"))
-	
+
 	return nil
 }
 
 func configFileHelp() string {
 	helpConfig := Config{
-		KimaiUrl: "https://timetracking.domain.com",
+		KimaiUrl:      "https://timetracking.domain.com",
 		KimaiUsername: "username",
 		KimaiPassword: "password",
-		HourlyRate: 100,
+		HourlyRate:    100,
 		ProjectMap: map[string]int{
 			"project1": 0,
 			"project2": 1,
@@ -496,16 +496,16 @@ func configFileHelp() string {
 	return string(helpBytes)
 }
 
-func readConfig() error {
-  if len(config.configPath) == 0 {
-	  configDir := getHomePath()
-    err := os.MkdirAll(configDir, os.ModePerm)
-    if err != nil {
-      err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
-      return err
-    }
-	  config.configPath = filepath.Join(configDir, configFileName)
-  }
+func readConfig() error { // TODO: pass the configPath as arg
+	if len(config.configPath) == 0 {
+		configDir := getHomePath() // TODO: first try the root of the repo looking for the file
+		err := os.MkdirAll(configDir, os.ModePerm)
+		if err != nil {
+			err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
+			return err
+		}
+		config.configPath = filepath.Join(configDir, configFileName)
+	}
 
 	configFile, err := os.Open(config.configPath)
 	if err != nil {
@@ -551,15 +551,15 @@ func parseCliArgsAndRun() error {
 	startOpPtr := flag.Bool("start", false, "Start task for the current branch")
 	restartOpPtr := flag.Bool("restart", false, "Restart previous activity")
 	listProjsOpPtr := flag.Bool("list-projs", false, "List available projects info")
-  configPathPtr := flag.String("config", "", "Path to the configuration file")
-  didSomething := false
+	configPathPtr := flag.String("config", "", "Path to the configuration file")
+	didSomething := false
 	flag.Parse()
 
 	if len(os.Args) == 1 {
 		flag.Usage()
 	}
 
-  config.configPath = *configPathPtr
+	config.configPath = *configPathPtr
 	err := readConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
@@ -572,22 +572,22 @@ func parseCliArgsAndRun() error {
 	}
 	if *stopOpPtr {
 		opErr = StopCurrentKimaiActivities()
-    didSomething = true
+		didSomething = true
 	}
 	if *startOpPtr && *restartOpPtr {
 		return errors.New("you cannot start and restart tasks at the same time")
 	}
 	if *startOpPtr {
 		opErr = StartCurrentGitBranchKimaiActivity()
-    didSomething = true
+		didSomething = true
 	} else if *restartOpPtr {
 		opErr = RestartLastKimaiRecord()
-    didSomething = true
+		didSomething = true
 	}
 
-  if !didSomething {
-    flag.Usage()
-  }
+	if !didSomething {
+		flag.Usage()
+	}
 
 	return opErr
 }
