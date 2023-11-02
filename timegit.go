@@ -34,7 +34,6 @@ type Config struct {
 	KimaiPassword string
 	HourlyRate    int
 	ProjectMap    map[string]int
-	configPath    string
 }
 
 type KimaiProject struct {
@@ -496,18 +495,18 @@ func configFileHelp() string {
 	return string(helpBytes)
 }
 
-func readConfig() error { // TODO: pass the configPath as arg
-	if len(config.configPath) == 0 {
+func readConfig(configPath string) error {
+	if len(configPath) == 0 {
 		configDir := getConfigDir() // TODO: first try the root of the repo looking for the file
 		err := os.MkdirAll(configDir, os.ModePerm)
 		if err != nil {
 			err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
 			return err
 		}
-		config.configPath = filepath.Join(configDir, configFileName)
+		configPath = filepath.Join(configDir, configFileName)
 	}
 
-	configFile, err := os.Open(config.configPath)
+	configFile, err := os.Open(configPath)
 	if err != nil {
 		helpMsg := configFileHelp()
 		err = fmt.Errorf("%w\n\nExample configuration:\n\n%s", err, helpMsg)
@@ -560,8 +559,7 @@ func parseCliArgsAndRun() error {
 		didSomething = true
 	}
 
-	config.configPath = *configPathPtr
-	err := readConfig()
+	err := readConfig(*configPathPtr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
