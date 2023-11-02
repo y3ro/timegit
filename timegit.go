@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -495,18 +496,48 @@ func configFileHelp() string {
 	return string(helpBytes)
 }
 
-func readConfig(configPath string) error {
-	if len(configPath) == 0 {
-		configDir := getConfigDir() // TODO: first try the root of the repo looking for the file
-		err := os.MkdirAll(configDir, os.ModePerm)
-		if err != nil {
-			err = fmt.Errorf("Error mkdir'ing in readConfig: %w", err)
-			return err
-		}
-		configPath = filepath.Join(configDir, configFileName)
+func openDefaultConfigFile() (*os.File, error) {
+	var (
+		configPath string
+		configFile *os.File
+		out        []byte
+		err        error
+	)
+
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err = cmd.Output()
+	if err == nil {
+		repoRoot := strings.TrimSpace(string(out))
+		configPath = filepath.Join(repoRoot, configFileName)
+		configFile, err = os.Open(configPath)
 	}
 
-	configFile, err := os.Open(configPath)
+	if err != nil {
+		configDir := getConfigDir()
+		err = os.MkdirAll(configDir, os.ModePerm)
+		if err != nil {
+			log.Fatalf("Error mkdir'ing in readConfig: %s\n", err)
+		}
+
+		configPath = filepath.Join(configDir, configFileName)
+		configFile, err = os.Open(configPath)
+	}
+
+	return configFile, err
+}
+
+func readConfig(configPath string) error {
+	var (
+		configFile *os.File
+		err        error
+	)
+
+	if len(configPath) == 0 {
+		configFile, err = openDefaultConfigFile()
+	} else {
+		configFile, err = os.Open(configPath)
+	}
+
 	if err != nil {
 		helpMsg := configFileHelp()
 		err = fmt.Errorf("%w\n\nExample configuration:\n\n%s", err, helpMsg)
