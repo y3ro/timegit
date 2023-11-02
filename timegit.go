@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	kimaiTimesheetsPath = "/timesheets/active" // TODO: api/...
-	kimaiRecentPath     = "/timesheets/recent"
-	kimaiProjectsPath   = "/project"
+	kimaiTimesheetsPath = "/api/timesheets/active"
+	kimaiRecentPath     = "/api/timesheets/recent"
+	kimaiProjectsPath   = "/api/project"
 	configFileName      = "timegit.json"
 )
 
