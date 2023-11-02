@@ -496,6 +496,26 @@ func configFileHelp() string {
 	return string(helpBytes)
 }
 
+func checkConfigFields(config *Config) error {
+	if config.KimaiUrl == "" {
+		return errors.New("no Kimai URL specified in the config file")
+	}
+	if config.KimaiUsername == "" {
+		return errors.New("no Kimai username specified in the config file")
+	}
+	if config.KimaiPassword == "" {
+		return errors.New("no Kimai password specified in the config file")
+	}
+	if config.HourlyRate == 0 {
+		return errors.New("no hourly rate specified in the config file")
+	}
+	if len(config.ProjectMap) == 0 {
+		return errors.New("no project id map specified in the config file")
+	}
+
+	return nil
+}
+
 func openDefaultConfigFile() (*os.File, error) {
 	var (
 		configPath string
@@ -557,23 +577,7 @@ func readConfig(configPath string) error {
 		return err
 	}
 
-	if config.KimaiUrl == "" {
-		return errors.New("no Kimai URL specified in the config file")
-	}
-	if config.KimaiUsername == "" {
-		return errors.New("no Kimai username specified in the config file")
-	}
-	if config.KimaiPassword == "" {
-		return errors.New("no Kimai password specified in the config file")
-	}
-	if config.HourlyRate == 0 {
-		return errors.New("no hourly rate specified in the config file")
-	}
-	if len(config.ProjectMap) == 0 {
-		return errors.New("no project id map specified in the config file")
-	}
-
-	return nil
+	return checkConfigFields(&config)
 }
 
 func parseCliArgsAndRun() error {
