@@ -331,14 +331,14 @@ func createDefaultProjectKimaiActivity(projectName string, projectID int) (*Kima
 }
 
 func fetchProjectKimaiActivity(projectName string, projectID int) (*KimaiActivity, error) {
-	projKimaiActivityPtr, projErr := fetchKimaiActivity(projectName, projectID)
-	if projErr != nil {
-		createdKimaiActivityPtr, createErr := createDefaultProjectKimaiActivity(projectName, projectID)
+	projKimaiActivityPtr, err := fetchKimaiActivity(projectName, projectID)
+	var noActivityFoundError *NoActivityFoundError
+	if errors.As(err, &noActivityFoundError) {
+		createdKimaiActivityPtr, err := createDefaultProjectKimaiActivity(projectName, projectID)
 		projKimaiActivityPtr = createdKimaiActivityPtr
-		projErr = createErr
-	}
-	if projErr != nil {
-		return nil, projErr
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return projKimaiActivityPtr, nil
@@ -359,7 +359,8 @@ func StartCurrentGitBranchKimaiActivity() error {
 		return errors.New("no activity associated with the current branch/project")
 	}
 	kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
-	if err != nil {
+	var noActivityFoundError *NoActivityFoundError
+	if errors.As(err, &noActivityFoundError) {
 		kimaiActivityPtr, err = fetchProjectKimaiActivity(projectName, projectID)
 		if err != nil {
 			return err
