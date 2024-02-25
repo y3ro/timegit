@@ -6,7 +6,7 @@ There are plans to support other backends, such as SQL databases, spreadsheets (
 
 ## Installation
 
-Assuming you have Go 1.21 installed:
+Assuming you have Go installed:
 
 `go install github.com/y3ro/timegit@latest`
 
