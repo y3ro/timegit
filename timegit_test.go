@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -609,6 +610,7 @@ func TestCheckConfigFields(t *testing.T) {
 		{"negative hourly rate", Config{KimaiUrl: "u", KimaiApiToken: "t", HourlyRate: -1, ProjectMap: projectMap}, true},
 		{"no project map", Config{KimaiUrl: "u", KimaiApiToken: "t"}, true},
 		{"negative max record hours", Config{KimaiUrl: "u", KimaiApiToken: "t", MaxRecordHours: -1, ProjectMap: projectMap}, true},
+		{"negative idle minutes", Config{KimaiUrl: "u", KimaiApiToken: "t", IdleMinutes: -1, ProjectMap: projectMap}, true},
 		{"activity rules", Config{KimaiUrl: "u", KimaiApiToken: "t", ProjectMap: projectMap,
 			ActivityRules: []ActivityRule{{Branch: "fix/*", Activity: "Bugfixing"}}}, false},
 		{"activity rule without activity", Config{KimaiUrl: "u", KimaiApiToken: "t", ProjectMap: projectMap,
@@ -686,6 +688,7 @@ func TestParseCliArgsInvalidCombinations(t *testing.T) {
 	tests := [][]string{
 		{"-all", "-start"},
 		{"-install-hook", "-status"},
+		{"-stop-idle", "-start"},
 	}
 
 	for _, args := range tests {
@@ -712,6 +715,9 @@ func newGitRepo(t *testing.T, name string) string {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", emptyConfig)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Keep the state file written by -start out of the user's config folder
+	t.Setenv("HOME", baseDir)
+	t.Setenv("USERPROFILE", baseDir)
 
 	repoDir := filepath.Join(baseDir, name)
 	if err := os.Mkdir(repoDir, 0o755); err != nil {
@@ -737,6 +743,165 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
+// commitFiles writes and commits files, recording the reflog entry at
+// committedAt.
+func commitFiles(t *testing.T, repoDir string, committedAt time.Time, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		writeFile(t, filepath.Join(repoDir, name), content)
+	}
+	t.Setenv("GIT_COMMITTER_DATE", fmt.Sprintf("%d +0000", committedAt.Unix()))
+	runGit(t, repoDir, "add", "-A")
+	runGit(t, repoDir, "-c", "user.name=timegit", "-c", "user.email=timegit@example.com", "commit", "-q", "-m", "commit")
+}
+
+func writeFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFileAt(t *testing.T, path string, content string, modTime time.Time) {
+	t.Helper()
+	writeFile(t, path, content)
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetLastRepoActivity(t *testing.T) {
+	repoDir := newGitRepo(t, "timegit")
+	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	lastActivity, err := getLastRepoActivity(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lastActivity.IsZero() {
+		t.Errorf("activity of an empty repository = %v, want none", lastActivity)
+	}
+
+	commitFiles(t, repoDir, base, map[string]string{"tracked.txt": "a", ".gitignore": "build/\n"})
+	steps := []struct {
+		name string
+		path string
+		want time.Time
+	}{
+		{"commit", "", base},
+		{"untracked file", "notes.txt", base.Add(time.Hour)},
+		{"modified file", "tracked.txt", base.Add(2 * time.Hour)},
+		{"ignored file", filepath.Join("build", "out.bin"), base.Add(2 * time.Hour)},
+		{"older untracked file", "old.txt", base.Add(2 * time.Hour)},
+	}
+	modTimes := map[string]time.Time{
+		"notes.txt":                       base.Add(time.Hour),
+		"tracked.txt":                     base.Add(2 * time.Hour),
+		filepath.Join("build", "out.bin"): base.Add(3 * time.Hour),
+		"old.txt":                         base.Add(-time.Hour),
+	}
+
+	for _, step := range steps {
+		if step.path != "" {
+			writeFileAt(t, filepath.Join(repoDir, step.path), "changed", modTimes[step.path])
+		}
+		got, err := getLastRepoActivity(repoDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Equal(step.want) {
+			t.Errorf("after %s: last activity = %v, want %v", step.name, got.UTC(), step.want)
+		}
+	}
+}
+
+func TestStopIdleKimaiRecords(t *testing.T) {
+	repoDir := newGitRepo(t, "timegit")
+	lastActivity := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	commitFiles(t, repoDir, lastActivity, map[string]string{"tracked.txt": "a"})
+	activeRecords := fmt.Sprintf(`[
+		{"id":5,"begin":%q,"project":{"id":1}},
+		{"id":7,"begin":%q,"project":{"id":3}}
+	]`, formatKimaiTime(lastActivity.Add(-time.Hour)), formatKimaiTime(lastActivity))
+
+	t.Run("stops idle records at the last activity", func(t *testing.T) {
+		var reqBody map[string]interface{}
+		calls := newKimaiStub(t, map[string]http.HandlerFunc{
+			"GET /api/timesheets/active": respondJSON(activeRecords),
+			"PATCH /api/timesheets/5": func(w http.ResponseWriter, r *http.Request) {
+				json.NewDecoder(r.Body).Decode(&reqBody)
+				respondJSON(`{"id":5}`)(w, r)
+			},
+		})
+
+		if err := StopIdleKimaiRecords(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := reqBody["end"], formatKimaiTime(lastActivity); got != want {
+			t.Errorf("end = %v, want %v", got, want)
+		}
+		want := []string{"GET /api/timesheets/active", "PATCH /api/timesheets/5"}
+		if got := calls(); !reflect.DeepEqual(got, want) {
+			t.Errorf("calls = %v, want %v (record 7 has no known repository)", got, want)
+		}
+	})
+
+	t.Run("keeps records with recent activity", func(t *testing.T) {
+		calls := newKimaiStub(t, map[string]http.HandlerFunc{
+			"GET /api/timesheets/active": respondJSON(activeRecords),
+		})
+		config.IdleMinutes = 180
+
+		if err := StopIdleKimaiRecords(); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls(); len(got) != 1 {
+			t.Errorf("calls = %v, want only the active records request", got)
+		}
+	})
+
+	t.Run("counts the record start as activity", func(t *testing.T) {
+		calls := newKimaiStub(t, map[string]http.HandlerFunc{
+			"GET /api/timesheets/active": respondJSON(fmt.Sprintf(`[{"id":5,"begin":%q,"project":{"id":1}}]`,
+				formatKimaiTime(time.Now().Add(-time.Minute)))),
+		})
+
+		if err := StopIdleKimaiRecords(); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls(); len(got) != 1 {
+			t.Errorf("calls = %v, want a just restarted record to be kept", got)
+		}
+	})
+}
+
+func TestSaveRepoPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	for projectID, repoRoot := range map[int]string{1: "/repos/timegit", 2: "/repos/other"} {
+		if err := saveRepoPath(projectID, repoRoot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := saveRepoPath(1, "/repos/timegit-worktree"); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := readState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{1: "/repos/timegit-worktree", 2: "/repos/other"}
+	if !reflect.DeepEqual(state.RepoPaths, want) {
+		t.Errorf("RepoPaths = %v, want %v", state.RepoPaths, want)
 	}
 }
 

@@ -28,7 +28,10 @@ const (
 	httpTimeout         = 15 * time.Second
 	maxErrorBodyLength  = 500
 
+	kimaiTimeFormat       = "2006-01-02T15:04:05"
+	stateFileName         = "timegit-state.json"
 	defaultMaxRecordHours = 8
+	defaultIdleMinutes    = 30
 	gitProjectConfigKey   = "timegit.project"
 	postCheckoutHookName  = "post-checkout"
 	postCheckoutHookMark  = "# Installed by timegit"
@@ -43,7 +46,7 @@ timegit -stop -all -start
 `
 
 // kimaiTimeLayouts are the formats in which Kimai may return dates
-var kimaiTimeLayouts = []string{"2006-01-02T15:04:05-0700", time.RFC3339, "2006-01-02T15:04:05"}
+var kimaiTimeLayouts = []string{"2006-01-02T15:04:05-0700", time.RFC3339, kimaiTimeFormat}
 
 var (
 	config     Config
@@ -57,6 +60,7 @@ type Config struct {
 	KimaiPassword  string `json:",omitempty"`
 	HourlyRate     float64
 	MaxRecordHours float64 `json:",omitempty"`
+	IdleMinutes    int     `json:",omitempty"`
 	ProjectMap     map[string]int
 	ActivityRules  []ActivityRule `json:",omitempty"`
 }
@@ -119,6 +123,14 @@ type recordTarget struct {
 	ProjectID   int
 	ActivityID  int
 	Description string
+	RepoRoot    string
+}
+
+// State is what timegit remembers between runs
+type State struct {
+	// RepoPaths maps Kimai project ids to the repository their last record
+	// was started from, so -stop-idle can check them from anywhere.
+	RepoPaths map[int]string
 }
 
 func (t *recordTarget) matches(record KimaiRecord) bool {
@@ -146,8 +158,75 @@ func getConfigDir() (string, error) {
 	return filepath.Join(homeDir, ".config"), nil
 }
 
+func formatKimaiTime(t time.Time) string {
+	return t.Local().Format(kimaiTimeFormat)
+}
+
 func getNow() string {
-	return time.Now().Format("2006-01-02T15:04:05")
+	return formatKimaiTime(time.Now())
+}
+
+func getStatePath() (string, error) {
+	configDir, err := getConfigDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(configDir, stateFileName), nil
+}
+
+func readState() (State, error) {
+	state := State{RepoPaths: map[int]string{}}
+	statePath, err := getStatePath()
+	if err != nil {
+		return state, err
+	}
+
+	stateBytes, err := os.ReadFile(statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return state, nil
+	}
+	if err != nil {
+		err = fmt.Errorf("Error reading the state file in readState: %w", err)
+		return state, err
+	}
+
+	err = json.Unmarshal(stateBytes, &state)
+	if err != nil {
+		err = fmt.Errorf("Error unmarshalling the state file %s in readState: %w", statePath, err)
+		return state, err
+	}
+	if state.RepoPaths == nil {
+		state.RepoPaths = map[int]string{}
+	}
+
+	return state, nil
+}
+
+func saveRepoPath(projectID int, repoRoot string) error {
+	state, err := readState()
+	if err != nil {
+		return err
+	}
+	if state.RepoPaths[projectID] == repoRoot {
+		return nil
+	}
+	state.RepoPaths[projectID] = repoRoot
+
+	statePath, err := getStatePath()
+	if err != nil {
+		return err
+	}
+	stateBytes, err := json.MarshalIndent(state, "", "    ")
+	if err != nil {
+		return err
+	}
+	err = os.MkdirAll(filepath.Dir(statePath), 0o755)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(statePath, stateBytes, 0o600)
 }
 
 func buildKimaiUrl(path string, query url.Values) string {
@@ -592,6 +671,11 @@ func resolveKimaiActivity(projectName string, branchName string, projectID int) 
 }
 
 func resolveRecordTarget() (*recordTarget, error) {
+	repoRoot, err := getRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+
 	projectName, projectID, err := getCurrentProject()
 	if err != nil {
 		return nil, err
@@ -607,7 +691,18 @@ func resolveRecordTarget() (*recordTarget, error) {
 		return nil, err
 	}
 
-	return &recordTarget{ProjectID: projectID, ActivityID: kimaiActivityPtr.Id, Description: branchName}, nil
+	return &recordTarget{ProjectID: projectID, ActivityID: kimaiActivityPtr.Id, Description: branchName, RepoRoot: repoRoot}, nil
+}
+
+// rememberRepo saves the repository of the target for -stop-idle. Failing to
+// do so only disables idle detection, so it is just reported.
+func rememberRepo(target *recordTarget) {
+	if target.RepoRoot == "" {
+		return
+	}
+	if err := saveRepoPath(target.ProjectID, target.RepoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not save the repository path for -stop-idle: %s\n", err)
+	}
 }
 
 // startRecordTarget starts a record for target unless one of the active
@@ -617,6 +712,7 @@ func startRecordTarget(target *recordTarget, activeRecords []KimaiRecord) error 
 	for _, activeRecord := range activeRecords {
 		if target.matches(activeRecord) {
 			fmt.Println("Already tracking record", activeRecord.Id)
+			rememberRepo(target)
 			return nil
 		}
 	}
@@ -627,6 +723,7 @@ func startRecordTarget(target *recordTarget, activeRecords []KimaiRecord) error 
 	}
 
 	fmt.Println("Started record", startedActivity.Id)
+	rememberRepo(target)
 	return nil
 }
 
@@ -770,6 +867,210 @@ func ShowKimaiStatus() error {
 	warnLongRecords(activeRecords)
 
 	return nil
+}
+
+func getIdleDuration() time.Duration {
+	minutes := config.IdleMinutes
+	if minutes == 0 {
+		minutes = defaultIdleMinutes
+	}
+
+	return time.Duration(minutes) * time.Minute
+}
+
+// getLastReflogTime returns when HEAD last moved (commits, checkouts,
+// rebases, resets...), if the repository has any reflog entry.
+func getLastReflogTime(repoRoot string) (time.Time, bool) {
+	cmd := exec.Command("git", "log", "-g", "-1", "--date=unix", "--format=%gd", "HEAD")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	// The selector looks like HEAD@{1761470000}
+	selector := strings.TrimSpace(string(output))
+	start := strings.LastIndex(selector, "{")
+	end := strings.LastIndex(selector, "}")
+	if start < 0 || end <= start {
+		return time.Time{}, false
+	}
+	seconds, err := strconv.ParseInt(selector[start+1:end], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return time.Unix(seconds, 0), true
+}
+
+// getLastChangeTime returns the latest modification time of the changed and
+// untracked (but not ignored) files of the repository.
+func getLastChangeTime(repoRoot string) (time.Time, error) {
+	cmd := exec.Command("git", "status", "--porcelain", "-z", "--untracked-files=all")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		err = fmt.Errorf("Error getting the changed files of %s: %w", repoRoot, err)
+		return time.Time{}, err
+	}
+
+	var lastChange time.Time
+	entries := strings.Split(string(output), "\x00")
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if len(entry) < 4 {
+			continue
+		}
+		// Renames and copies are followed by an entry with the original path
+		if strings.ContainsAny(entry[:2], "RC") {
+			i++
+		}
+
+		fileInfo, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(entry[3:])))
+		if err == nil && fileInfo.ModTime().After(lastChange) {
+			lastChange = fileInfo.ModTime()
+		}
+	}
+
+	return lastChange, nil
+}
+
+// getLastRepoActivity returns the latest time HEAD moved or a changed file
+// was modified in the repository, or the zero time if there is none.
+func getLastRepoActivity(repoRoot string) (time.Time, error) {
+	if _, err := os.Stat(repoRoot); err != nil {
+		return time.Time{}, err
+	}
+
+	lastActivity, err := getLastChangeTime(repoRoot)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if reflogTime, ok := getLastReflogTime(repoRoot); ok && reflogTime.After(lastActivity) {
+		lastActivity = reflogTime
+	}
+
+	return lastActivity, nil
+}
+
+// getKnownRepoPaths returns the repositories remembered by -start, plus the
+// current one, by Kimai project id.
+func getKnownRepoPaths() (map[int]string, error) {
+	state, err := readState()
+	if err != nil {
+		return nil, err
+	}
+
+	if repoRoot, err := getRepoRoot(); err == nil {
+		if _, projectID, err := getCurrentProject(); err == nil {
+			state.RepoPaths[projectID] = repoRoot
+		}
+	}
+
+	return state.RepoPaths, nil
+}
+
+func buildRecordPath(recordID int) string {
+	return fmt.Sprintf("%s/%d", kimaiTimesheetsPath, recordID)
+}
+
+// endKimaiRecordAt stops a record setting its end time, instead of the
+// current time used by the stop endpoint.
+func endKimaiRecordAt(recordID int, end time.Time) (*KimaiRecord, error) {
+	url := buildKimaiUrl(buildRecordPath(recordID), nil)
+	method := "PATCH"
+	reqBodyBytes, err := json.Marshal(map[string]interface{}{"end": formatKimaiTime(end)})
+	if err != nil {
+		err = fmt.Errorf("Error marshalling in endKimaiRecordAt: %w", err)
+		return nil, err
+	}
+
+	respBody, err := fetchKimaiResource(url, method, bytes.NewReader(reqBodyBytes))
+	if err != nil {
+		err = fmt.Errorf("Error fetching in endKimaiRecordAt: %w", err)
+		return nil, err
+	}
+
+	var endedRecord KimaiRecord
+	err = json.Unmarshal(respBody, &endedRecord)
+	if err != nil {
+		err = fmt.Errorf("Error unmarshalling in endKimaiRecordAt: %w", err)
+		return nil, err
+	}
+
+	if endedRecord.Id == 0 {
+		return nil, errors.New("no ended record")
+	}
+
+	return &endedRecord, nil
+}
+
+// stopIdleRecord stops the record, at the time of the last activity, if its
+// repository has had no activity for IdleMinutes.
+func stopIdleRecord(record KimaiRecord, repoRoot string, now time.Time) error {
+	lastActivity, err := getLastRepoActivity(repoRoot)
+	if err != nil {
+		return fmt.Errorf("Error checking the activity of record %d: %w", record.Id, err)
+	}
+	// A record restarted or started by hand counts as activity
+	if begin, err := parseKimaiTime(record.Begin); err == nil && begin.After(lastActivity) {
+		lastActivity = begin
+	}
+	if lastActivity.IsZero() {
+		fmt.Printf("Skipping record %d: no activity found in %s\n", record.Id, repoRoot)
+		return nil
+	}
+	if lastActivity.After(now) {
+		lastActivity = now
+	}
+
+	idle := now.Sub(lastActivity)
+	if idle < getIdleDuration() {
+		fmt.Printf("Record %d is active: last activity in %s %s ago\n", record.Id, repoRoot, formatDuration(idle))
+		return nil
+	}
+
+	_, err = endKimaiRecordAt(record.Id, lastActivity)
+	if err != nil {
+		return fmt.Errorf("Error stopping idle record %d: %w", record.Id, err)
+	}
+	fmt.Printf("Stopped record %d at %s, after %s without activity in %s\n",
+		record.Id, lastActivity.Local().Format("2006-01-02 15:04"), formatDuration(idle), repoRoot)
+
+	return nil
+}
+
+// StopIdleKimaiRecords stops the active records whose repository has had no
+// activity for IdleMinutes, setting their end to the last activity.
+func StopIdleKimaiRecords() error {
+	activeRecords, err := fetchKimaiActiveRecords()
+	if err != nil {
+		return err
+	}
+	if len(activeRecords) == 0 {
+		fmt.Println("No active records")
+		return nil
+	}
+
+	repoPaths, err := getKnownRepoPaths()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	now := time.Now()
+	for _, record := range activeRecords {
+		repoRoot, ok := repoPaths[record.Project.Id]
+		if !ok {
+			fmt.Printf("Skipping record %d: no known repository for %s\n", record.Id, refLabel(record.Project, "project"))
+			continue
+		}
+		if err := stopIdleRecord(record, repoRoot, now); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 func getHooksDir() (string, error) {
@@ -932,6 +1233,7 @@ func configFileHelp() string {
 		KimaiApiToken:  "api-token",
 		HourlyRate:     100,
 		MaxRecordHours: defaultMaxRecordHours,
+		IdleMinutes:    defaultIdleMinutes,
 		ProjectMap: map[string]int{
 			"project1": 1,
 			"project2": 2,
@@ -958,6 +1260,9 @@ func checkConfigFields(config *Config) error {
 	}
 	if config.MaxRecordHours < 0 {
 		return errors.New("negative maximum record hours specified in the config file")
+	}
+	if config.IdleMinutes < 0 {
+		return errors.New("negative idle minutes specified in the config file")
 	}
 	if len(config.ProjectMap) == 0 {
 		return errors.New("no project id map specified in the config file")
@@ -1033,6 +1338,7 @@ func parseCliArgsAndRun(args []string) error {
 	startOpPtr := flags.Bool("start", false, "Start a record for the current branch, unless it is already active")
 	restartOpPtr := flags.Bool("restart", false, "Restart previous activity")
 	statusOpPtr := flags.Bool("status", false, "Show the active records")
+	stopIdleOpPtr := flags.Bool("stop-idle", false, "Stop the records whose repository has had no activity for IdleMinutes")
 	listProjsOpPtr := flags.Bool("list-projs", false, "List available projects info")
 	installHookOpPtr := flags.Bool("install-hook", false, "Install a post-checkout Git hook tracking the checked out branch")
 	configPathPtr := flags.String("config", "", "Path to the configuration file")
@@ -1045,9 +1351,12 @@ func parseCliArgsAndRun(args []string) error {
 		return err
 	}
 
-	kimaiOp := *stopOpPtr || *startOpPtr || *restartOpPtr || *statusOpPtr || *listProjsOpPtr
+	kimaiOp := *stopOpPtr || *startOpPtr || *restartOpPtr || *statusOpPtr || *stopIdleOpPtr || *listProjsOpPtr
 	if *startOpPtr && *restartOpPtr {
 		return errors.New("you cannot start and restart tasks at the same time")
+	}
+	if *stopIdleOpPtr && (*stopOpPtr || *startOpPtr || *restartOpPtr) {
+		return errors.New("-stop-idle cannot be combined with -stop, -start or -restart")
 	}
 	if *allOpPtr && !*stopOpPtr {
 		return errors.New("-all can only be used with -stop")
@@ -1079,6 +1388,12 @@ func parseCliArgsAndRun(args []string) error {
 	}
 	if *restartOpPtr {
 		err = RestartLastKimaiRecord()
+		if err != nil {
+			return err
+		}
+	}
+	if *stopIdleOpPtr {
+		err = StopIdleKimaiRecords()
 		if err != nil {
 			return err
 		}
