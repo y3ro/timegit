@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +27,23 @@ const (
 	configFileName      = "timegit.json"
 	httpTimeout         = 15 * time.Second
 	maxErrorBodyLength  = 500
+
+	defaultMaxRecordHours = 8
+	gitProjectConfigKey   = "timegit.project"
+	postCheckoutHookName  = "post-checkout"
+	postCheckoutHookMark  = "# Installed by timegit"
 )
+
+// postCheckoutHookBody switches the Kimai record only on branch checkouts
+// ($3 is 0 for file checkouts) that leave a branch checked out, so rebases,
+// bisects and tag checkouts (detached HEAD) are ignored.
+const postCheckoutHookBody = `[ "$3" = "1" ] || exit 0
+git symbolic-ref -q HEAD >/dev/null || exit 0
+timegit -stop -all -start
+`
+
+// kimaiTimeLayouts are the formats in which Kimai may return dates
+var kimaiTimeLayouts = []string{"2006-01-02T15:04:05-0700", time.RFC3339, "2006-01-02T15:04:05"}
 
 var (
 	config     Config
@@ -34,12 +51,22 @@ var (
 )
 
 type Config struct {
-	KimaiUrl      string
-	KimaiApiToken string `json:",omitempty"`
-	KimaiUsername string `json:",omitempty"`
-	KimaiPassword string `json:",omitempty"`
-	HourlyRate    float64
-	ProjectMap    map[string]int
+	KimaiUrl       string
+	KimaiApiToken  string `json:",omitempty"`
+	KimaiUsername  string `json:",omitempty"`
+	KimaiPassword  string `json:",omitempty"`
+	HourlyRate     float64
+	MaxRecordHours float64 `json:",omitempty"`
+	ProjectMap     map[string]int
+	ActivityRules  []ActivityRule `json:",omitempty"`
+}
+
+// ActivityRule maps the branches matching a glob pattern, where * matches any
+// sequence of characters (including /) and ? any single character, to a Kimai
+// activity.
+type ActivityRule struct {
+	Branch   string
+	Activity string
 }
 
 type KimaiProject struct {
@@ -52,8 +79,53 @@ type KimaiActivity struct {
 	Name string
 }
 
+// KimaiRef is a reference to a Kimai entity, which the API returns either as
+// a bare id or as an expanded object depending on the endpoint.
+type KimaiRef struct {
+	Id   int
+	Name string
+}
+
+func (r *KimaiRef) UnmarshalJSON(data []byte) error {
+	var id int
+	if err := json.Unmarshal(data, &id); err == nil {
+		r.Id, r.Name = id, ""
+		return nil
+	}
+
+	var entity struct {
+		Id   int
+		Name string
+	}
+	if err := json.Unmarshal(data, &entity); err != nil {
+		return err
+	}
+	r.Id, r.Name = entity.Id, entity.Name
+
+	return nil
+}
+
 type KimaiRecord struct {
-	Id int
+	Id          int
+	Begin       string
+	Description string
+	Project     KimaiRef
+	Activity    KimaiRef
+}
+
+// recordTarget is the record that should be running for the current Git
+// repository and branch.
+type recordTarget struct {
+	ProjectID   int
+	ActivityID  int
+	Description string
+}
+
+func (t *recordTarget) matches(record KimaiRecord) bool {
+	return t != nil &&
+		record.Project.Id == t.ProjectID &&
+		record.Activity.Id == t.ActivityID &&
+		record.Description == t.Description
 }
 
 type NoActivityFoundError struct {
@@ -180,13 +252,16 @@ func fetchKimaiActivity(name string, projectID int) (*KimaiActivity, error) {
 	return &matchingActivities[0], nil
 }
 
-func startKimaiActivity(projectId int, activityId int) (*KimaiActivity, error) {
+func startKimaiActivity(projectId int, activityId int, description string) (*KimaiActivity, error) {
 	url := buildKimaiUrl(kimaiTimesheetsPath, nil)
 	method := "POST"
 	reqBody := map[string]interface{}{
 		"begin":    getNow(),
 		"project":  projectId,
 		"activity": activityId,
+	}
+	if description != "" {
+		reqBody["description"] = description
 	}
 	if config.HourlyRate > 0 {
 		reqBody["hourlyRate"] = config.HourlyRate
@@ -290,6 +365,24 @@ func getRepoRoot() (string, error) {
 	return outputStr, nil
 }
 
+// getGitConfig returns the value of a Git config key, or "" if it is unset
+func getGitConfig(key string) (string, error) {
+	cmd := exec.Command("git", "config", "--get", key)
+	output, err := cmd.Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", nil
+	}
+	if err != nil {
+		err = fmt.Errorf("Error reading the git config key %s: %w", key, err)
+		return "", err
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// getProjectName returns the timegit.project Git config value or, if unset,
+// the name of the repository folder.
 func getProjectName() (string, error) {
 	repoRoot, err := getRepoRoot()
 	if err != nil {
@@ -297,7 +390,30 @@ func getProjectName() (string, error) {
 		return "", err
 	}
 
+	projectName, err := getGitConfig(gitProjectConfigKey)
+	if err != nil {
+		err = fmt.Errorf("Error getting project name: %w", err)
+		return "", err
+	}
+	if projectName != "" {
+		return projectName, nil
+	}
+
 	return filepath.Base(repoRoot), nil
+}
+
+func getCurrentProject() (string, int, error) {
+	projectName, err := getProjectName()
+	if err != nil {
+		return "", 0, err
+	}
+
+	projectID, ok := config.ProjectMap[projectName]
+	if !ok {
+		return "", 0, fmt.Errorf("project %q not found in the ProjectMap of the config file", projectName)
+	}
+
+	return projectName, projectID, nil
 }
 
 func getCurrentGitBranch() (string, error) {
@@ -311,30 +427,58 @@ func getCurrentGitBranch() (string, error) {
 	return strings.TrimSpace(outputStr), nil
 }
 
-func StopCurrentKimaiActivities() error {
-	activeRecords, err := fetchKimaiActiveRecords()
+// getStopScopeProjectID returns the id of the project whose records -stop
+// affects, or 0 for every project when all is set or outside a Git repository.
+func getStopScopeProjectID(all bool) (int, error) {
+	if all {
+		return 0, nil
+	}
+	if _, err := getRepoRoot(); err != nil {
+		return 0, nil
+	}
+
+	_, projectID, err := getCurrentProject()
 	if err != nil {
-		err = fmt.Errorf("Error fetching active records in stopCurrentKimaiActivities: %w", err)
-		return err
+		return 0, fmt.Errorf("%w (use -all to stop the records of every project)", err)
 	}
 
-	if len(activeRecords) == 0 {
-		fmt.Println("No active records to stop")
-		return nil
-	}
+	return projectID, nil
+}
 
-	var kimaiActivity *KimaiActivity
-	for i := 0; i < len(activeRecords); i++ {
-		activeRecord := activeRecords[i]
-		kimaiActivity, err = stopKimaiRecord(activeRecord.Id)
-		if err != nil {
-			err = fmt.Errorf("Error stopping active record (%d) in stopCurrentKimaiActivities: %w", activeRecord.Id, err)
-			return err
+// stopKimaiRecords stops the active records of the project projectID (of
+// every project if it is 0), except the one matching keep, if any, and
+// returns the records left running.
+func stopKimaiRecords(activeRecords []KimaiRecord, projectID int, keep *recordTarget) ([]KimaiRecord, error) {
+	var runningRecords []KimaiRecord
+	stoppedCount := 0
+	now := time.Now()
+
+	for _, activeRecord := range activeRecords {
+		if (projectID != 0 && activeRecord.Project.Id != projectID) || keep.matches(activeRecord) {
+			runningRecords = append(runningRecords, activeRecord)
+			continue
 		}
-		fmt.Println("Stopped active record", kimaiActivity.Id)
+
+		stoppedRecord, err := stopKimaiRecord(activeRecord.Id)
+		if err != nil {
+			err = fmt.Errorf("Error stopping active record (%d) in stopKimaiRecords: %w", activeRecord.Id, err)
+			return nil, err
+		}
+		stoppedCount++
+
+		msg := fmt.Sprintf("Stopped record %d", stoppedRecord.Id)
+		if duration, ok := recordDuration(activeRecord, now); ok {
+			msg += " after " + formatDuration(duration)
+		}
+		fmt.Println(msg)
+		warnIfTooLong(activeRecord, now)
 	}
 
-	return nil
+	if stoppedCount == 0 {
+		fmt.Println("No active records to stop")
+	}
+
+	return runningRecords, nil
 }
 
 func createDefaultProjectKimaiActivity(projectName string, projectID int) (*KimaiActivity, error) {
@@ -386,48 +530,293 @@ func fetchProjectKimaiActivity(projectName string, projectID int) (*KimaiActivit
 	return projKimaiActivityPtr, nil
 }
 
-// resolveKimaiActivity returns the activity named after the branch or, if
-// there is none (or HEAD is detached), the default activity of the project.
+func globMatch(pattern string, s string) bool {
+	var re strings.Builder
+	re.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			re.WriteString(".*")
+		case '?':
+			re.WriteString(".")
+		default:
+			re.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	re.WriteString("$")
+
+	return regexp.MustCompile(re.String()).MatchString(s)
+}
+
+// matchActivityRule returns the activity of the first rule whose branch
+// pattern matches branchName.
+func matchActivityRule(branchName string) (string, bool) {
+	for _, rule := range config.ActivityRules {
+		if globMatch(rule.Branch, branchName) {
+			return rule.Activity, true
+		}
+	}
+
+	return "", false
+}
+
+// resolveKimaiActivity returns, in order of preference, the activity of the
+// first rule matching the branch, the activity named after the branch or the
+// default activity of the project, which is also used when HEAD is detached.
 func resolveKimaiActivity(projectName string, branchName string, projectID int) (*KimaiActivity, error) {
-	if branchName != "" {
-		kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
+	if branchName == "" {
+		return fetchProjectKimaiActivity(projectName, projectID)
+	}
+
+	var noActivityFoundError *NoActivityFoundError
+	if ruleActivity, ok := matchActivityRule(branchName); ok {
+		kimaiActivityPtr, err := fetchKimaiActivity(ruleActivity, projectID)
 		if err == nil {
 			return kimaiActivityPtr, nil
 		}
-		var noActivityFoundError *NoActivityFoundError
 		if !errors.As(err, &noActivityFoundError) {
 			return nil, err
 		}
+		fmt.Fprintf(os.Stderr, "Warning: activity %q of the rule matching branch %q not found in Kimai\n", ruleActivity, branchName)
+	}
+
+	kimaiActivityPtr, err := fetchKimaiActivity(branchName, projectID)
+	if err == nil {
+		return kimaiActivityPtr, nil
+	}
+	if !errors.As(err, &noActivityFoundError) {
+		return nil, err
 	}
 
 	return fetchProjectKimaiActivity(projectName, projectID)
 }
 
-func StartCurrentGitBranchKimaiActivity() error {
-	projectName, err := getProjectName()
+func resolveRecordTarget() (*recordTarget, error) {
+	projectName, projectID, err := getCurrentProject()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	branchName, err := getCurrentGitBranch()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	projectID, ok := config.ProjectMap[projectName]
-	if !ok {
-		return fmt.Errorf("project %q not found in the ProjectMap of the config file", projectName)
-	}
+
 	kimaiActivityPtr, err := resolveKimaiActivity(projectName, branchName, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &recordTarget{ProjectID: projectID, ActivityID: kimaiActivityPtr.Id, Description: branchName}, nil
+}
+
+// startRecordTarget starts a record for target unless one of the active
+// records already matches it, so checking out the same branch again does not
+// split the record.
+func startRecordTarget(target *recordTarget, activeRecords []KimaiRecord) error {
+	for _, activeRecord := range activeRecords {
+		if target.matches(activeRecord) {
+			fmt.Println("Already tracking record", activeRecord.Id)
+			return nil
+		}
+	}
+
+	startedActivity, err := startKimaiActivity(target.ProjectID, target.ActivityID, target.Description)
 	if err != nil {
 		return err
 	}
 
-	startedActivity, errStart := startKimaiActivity(projectID, kimaiActivityPtr.Id)
-	if errStart != nil {
-		return errStart
+	fmt.Println("Started record", startedActivity.Id)
+	return nil
+}
+
+// runRecordOps stops and/or starts records. When both are requested, the
+// record of the current branch is left running if it is already active.
+func runRecordOps(stop bool, stopAll bool, start bool) error {
+	var (
+		target    *recordTarget
+		projectID int
+		err       error
+	)
+
+	if start {
+		target, err = resolveRecordTarget()
+		if err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("Started record", startedActivity.Id)
+	activeRecords, err := fetchKimaiActiveRecords()
+	if err != nil {
+		err = fmt.Errorf("Error fetching active records in runRecordOps: %w", err)
+		return err
+	}
+
+	if stop {
+		projectID, err = getStopScopeProjectID(stopAll)
+		if err != nil {
+			return err
+		}
+		activeRecords, err = stopKimaiRecords(activeRecords, projectID, target)
+		if err != nil {
+			return err
+		}
+	}
+
+	warnLongRecords(activeRecords)
+
+	if start {
+		return startRecordTarget(target, activeRecords)
+	}
+
+	return nil
+}
+
+func parseKimaiTime(value string) (time.Time, error) {
+	for _, layout := range kimaiTimeLayouts {
+		parsed, err := time.ParseInLocation(layout, value, time.Local)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("unknown Kimai time format %q", value)
+}
+
+func recordDuration(record KimaiRecord, now time.Time) (time.Duration, bool) {
+	begin, err := parseKimaiTime(record.Begin)
+	if err != nil || begin.After(now) {
+		return 0, false
+	}
+
+	return now.Sub(begin), true
+}
+
+func formatDuration(d time.Duration) string {
+	d = d.Truncate(time.Minute)
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func getMaxRecordDuration() time.Duration {
+	hours := config.MaxRecordHours
+	if hours == 0 {
+		hours = defaultMaxRecordHours
+	}
+
+	return time.Duration(hours * float64(time.Hour))
+}
+
+// longRecordWarning returns a warning if the record lasts longer than
+// MaxRecordHours, which usually means it was not stopped on time.
+func longRecordWarning(record KimaiRecord, now time.Time) string {
+	duration, ok := recordDuration(record, now)
+	maxDuration := getMaxRecordDuration()
+	if !ok || duration <= maxDuration {
+		return ""
+	}
+
+	return fmt.Sprintf("Warning: record %d is %s long, over the %s limit; check its times in Kimai",
+		record.Id, formatDuration(duration), formatDuration(maxDuration))
+}
+
+func warnIfTooLong(record KimaiRecord, now time.Time) {
+	if warning := longRecordWarning(record, now); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+}
+
+func warnLongRecords(records []KimaiRecord) {
+	now := time.Now()
+	for _, record := range records {
+		warnIfTooLong(record, now)
+	}
+}
+
+func refLabel(ref KimaiRef, kind string) string {
+	if ref.Name != "" {
+		return ref.Name
+	}
+
+	return fmt.Sprintf("%s %d", kind, ref.Id)
+}
+
+func formatRecord(record KimaiRecord, now time.Time) string {
+	line := fmt.Sprintf("Record %d: %s / %s", record.Id, refLabel(record.Project, "project"), refLabel(record.Activity, "activity"))
+	if record.Description != "" {
+		line += fmt.Sprintf(" (%s)", record.Description)
+	}
+	if duration, ok := recordDuration(record, now); ok {
+		line += ", running for " + formatDuration(duration)
+	}
+
+	return line
+}
+
+func ShowKimaiStatus() error {
+	activeRecords, err := fetchKimaiActiveRecords()
+	if err != nil {
+		return err
+	}
+
+	if len(activeRecords) == 0 {
+		fmt.Println("No active records")
+		return nil
+	}
+
+	now := time.Now()
+	for _, record := range activeRecords {
+		fmt.Println(formatRecord(record, now))
+	}
+	warnLongRecords(activeRecords)
+
+	return nil
+}
+
+func getHooksDir() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-path", "hooks")
+	output, err := cmd.CombinedOutput()
+	outputStr := strings.TrimSpace(string(output))
+	if err != nil {
+		err = fmt.Errorf("Error getting the Git hooks directory: %s [%w]", outputStr, err)
+		return "", err
+	}
+
+	return outputStr, nil
+}
+
+// InstallGitHook installs a post-checkout hook running timegit on branch
+// checkouts, refusing to overwrite hooks it did not install.
+func InstallGitHook() error {
+	hooksDir, err := getHooksDir()
+	if err != nil {
+		return err
+	}
+	hookPath := filepath.Join(hooksDir, postCheckoutHookName)
+
+	existingHook, err := os.ReadFile(hookPath)
+	if err == nil {
+		if strings.Contains(string(existingHook), postCheckoutHookMark) {
+			fmt.Println("timegit hook already installed in", hookPath)
+			return nil
+		}
+		return fmt.Errorf("a %s hook already exists in %s; add these lines to it:\n\n%s",
+			postCheckoutHookName, hookPath, postCheckoutHookBody)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	err = os.MkdirAll(hooksDir, 0o755)
+	if err != nil {
+		return err
+	}
+	hookContent := "#!/bin/sh\n" + postCheckoutHookMark + "\n" + postCheckoutHookBody
+	err = os.WriteFile(hookPath, []byte(hookContent), 0o755)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Installed timegit hook in", hookPath)
 	return nil
 }
 
@@ -539,12 +928,17 @@ func ListKimaiProjects() error {
 
 func configFileHelp() string {
 	helpConfig := Config{
-		KimaiUrl:      "https://timetracking.domain.com",
-		KimaiApiToken: "api-token",
-		HourlyRate:    100,
+		KimaiUrl:       "https://timetracking.domain.com",
+		KimaiApiToken:  "api-token",
+		HourlyRate:     100,
+		MaxRecordHours: defaultMaxRecordHours,
 		ProjectMap: map[string]int{
 			"project1": 1,
 			"project2": 2,
+		},
+		ActivityRules: []ActivityRule{
+			{Branch: "feature/*", Activity: "Development"},
+			{Branch: "fix/*", Activity: "Bugfixing"},
 		},
 	}
 
@@ -562,8 +956,16 @@ func checkConfigFields(config *Config) error {
 	if config.HourlyRate < 0 {
 		return errors.New("negative hourly rate specified in the config file")
 	}
+	if config.MaxRecordHours < 0 {
+		return errors.New("negative maximum record hours specified in the config file")
+	}
 	if len(config.ProjectMap) == 0 {
 		return errors.New("no project id map specified in the config file")
+	}
+	for _, rule := range config.ActivityRules {
+		if rule.Branch == "" || rule.Activity == "" {
+			return errors.New("every activity rule in the config file needs a Branch pattern and an Activity")
+		}
 	}
 
 	return nil
@@ -626,10 +1028,13 @@ func readConfig(configPath string) error {
 
 func parseCliArgsAndRun(args []string) error {
 	flags := flag.NewFlagSet("timegit", flag.ContinueOnError)
-	stopOpPtr := flags.Bool("stop", false, "Stop current activity")
-	startOpPtr := flags.Bool("start", false, "Start task for the current branch")
+	stopOpPtr := flags.Bool("stop", false, "Stop the active records of the current project")
+	allOpPtr := flags.Bool("all", false, "With -stop, stop the active records of every project")
+	startOpPtr := flags.Bool("start", false, "Start a record for the current branch, unless it is already active")
 	restartOpPtr := flags.Bool("restart", false, "Restart previous activity")
+	statusOpPtr := flags.Bool("status", false, "Show the active records")
 	listProjsOpPtr := flags.Bool("list-projs", false, "List available projects info")
+	installHookOpPtr := flags.Bool("install-hook", false, "Install a post-checkout Git hook tracking the checked out branch")
 	configPathPtr := flags.String("config", "", "Path to the configuration file")
 
 	err := flags.Parse(args)
@@ -640,10 +1045,20 @@ func parseCliArgsAndRun(args []string) error {
 		return err
 	}
 
+	kimaiOp := *stopOpPtr || *startOpPtr || *restartOpPtr || *statusOpPtr || *listProjsOpPtr
 	if *startOpPtr && *restartOpPtr {
 		return errors.New("you cannot start and restart tasks at the same time")
 	}
-	if !*stopOpPtr && !*startOpPtr && !*restartOpPtr && !*listProjsOpPtr {
+	if *allOpPtr && !*stopOpPtr {
+		return errors.New("-all can only be used with -stop")
+	}
+	if *installHookOpPtr && kimaiOp {
+		return errors.New("-install-hook cannot be combined with other operations")
+	}
+	if *installHookOpPtr {
+		return InstallGitHook()
+	}
+	if !kimaiOp {
 		flags.Usage()
 		return nil
 	}
@@ -656,17 +1071,20 @@ func parseCliArgsAndRun(args []string) error {
 	if *listProjsOpPtr {
 		return ListKimaiProjects()
 	}
-	if *stopOpPtr {
-		err = StopCurrentKimaiActivities()
+	if *stopOpPtr || *startOpPtr {
+		err = runRecordOps(*stopOpPtr, *allOpPtr, *startOpPtr)
 		if err != nil {
 			return err
 		}
 	}
-	if *startOpPtr {
-		return StartCurrentGitBranchKimaiActivity()
-	}
 	if *restartOpPtr {
-		return RestartLastKimaiRecord()
+		err = RestartLastKimaiRecord()
+		if err != nil {
+			return err
+		}
+	}
+	if *statusOpPtr {
+		return ShowKimaiStatus()
 	}
 
 	return nil
