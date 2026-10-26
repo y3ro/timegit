@@ -27,15 +27,19 @@ Example contents:
 ```
 {
     "KimaiUrl": "https://timetracking.domain.com",
-    "KimaiUsername": "username",
-    "KimaiPassword": "password",
+    "KimaiApiToken": "api-token",
     "HourlyRate": 100,
     "ProjectMap": {
-        "project1": 0,
-        "project2": 1
+        "project1": 1,
+        "project2": 2
     }
 }
 ```
+
+* `KimaiUrl`: base URL of your Kimai instance, without the `/api` suffix.
+* `KimaiApiToken`: a Kimai API token, sent as `Authorization: Bearer <token>`.
+On older Kimai instances you can use `KimaiUsername` and `KimaiPassword` (the API password) instead.
+* `HourlyRate` (optional): rate applied to new records. If omitted, Kimai applies the rates configured for the project or activity.
 
 You can get a project map of your Kimai instance using a specific option (`list-projs`), as shown below. You would only need to copy and paste the result.
 
